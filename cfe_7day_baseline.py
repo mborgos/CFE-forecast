@@ -1,4 +1,5 @@
 
+import argparse
 from pathlib import Path
 import time
 
@@ -9,15 +10,14 @@ import pandas as pd
 import xgboost as xgb
 
 
-REGION = "DE"                       # region of the detailed tables and figures; all regions are scored
+REGION = "DE"                       # region of the detailed tables and figures (the first region found if it has no data); all regions are scored
 INCLUDE_BIOMASS_AS_CFE = False      # definitions differ; keep it explicit
 CFE_SOURCES = ["nuclear", "hydro", "solar", "wind", "geothermal"] + (["biomass"] if INCLUDE_BIOMASS_AS_CFE else [])
 
 HORIZON_DAYS = 7                    # forecast window in days
 START_HOUR = 0                      # UTC hour at which each forecast window starts (one forecast per day)
-VAL_START = "2021-01-01"            # XGBoost trains on targets before this date and picks its number of trees on VAL_START to TEST_START
-TEST_START, TEST_END = "2021-07-01", "2022-01-01"   # test forecasts start from TEST_START; every target hour is before TEST_END
-EXAMPLE_START = "2021-10-04"        # the forecast drawn in <REGION>_example_forecast.png
+TEST_MONTHS = 6                     # the last months of the data are the test period
+VAL_MONTHS = 6                      # the months before the test period: XGBoost picks its number of trees on them
 
 XGB_PARAMS = dict(learning_rate=0.05, max_depth=6, min_child_weight=20, subsample=0.8, colsample_bytree=0.8,
                   tree_method="hist", random_state=0, n_jobs=-1)
@@ -28,16 +28,16 @@ HIST = 24 * 7                       # hours of history each forecast is given
 DAYS = [f"day {k}" for k in range(1, HORIZON_DAYS + 1)] + ["all"]
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "CarbonCast" / "data"
+DATA_DIR = ROOT / "data"            # where data_collection.py writes; CarbonCast/data has the same layout
 OUT_DIR = ROOT / "results" / "cfe_7day_baseline"
 
 
 # --- The %CFE series --------------------------------------------------------------------------
 
-def load_cfe(region, cfe_sources=CFE_SOURCES):
-    """Hourly %CFE of a region. Negative generation is set to zero, gaps of up to 3 hours are
-    interpolated and longer ones carried forward."""
-    df = pd.read_csv(DATA_DIR / region / f"{region}_lifecycle_emissions.csv")
+def load_cfe(region, data_dir=DATA_DIR, cfe_sources=CFE_SOURCES):
+    """Hourly %CFE of a region, from <data_dir>/<region>/<region>_lifecycle_emissions.csv. Negative
+    generation is set to zero, gaps of up to 3 hours are interpolated and longer ones carried forward."""
+    df = pd.read_csv(Path(data_dir) / region / f"{region}_lifecycle_emissions.csv")
     df.index = pd.to_datetime(df.pop("UTC time"), utc=True).dt.tz_localize(None)   # some files carry +00:00
     sources = [c for c in df.columns if c != "carbon_intensity" and not c.startswith("Unnamed")]
     gen = df[sources].clip(lower=0)
@@ -47,12 +47,27 @@ def load_cfe(region, cfe_sources=CFE_SOURCES):
     return cfe.ffill().rename("cfe")
 
 
+# --- Train, validation and test periods -------------------------------------------------------
+
+def split_dates(cfe):
+    """(val_start, test_start, test_end) of a series. The test period is its last TEST_MONTHS months,
+    validation the VAL_MONTHS months before that, and training everything earlier. Test forecasts
+    start from test_start, and every target hour is before test_end."""
+    test_end = (cfe.index[-1] + pd.Timedelta(hours=1)).floor("D")
+    test_start = test_end - pd.DateOffset(months=TEST_MONTHS)
+    return test_start - pd.DateOffset(months=VAL_MONTHS), test_start, test_end
+
+
 # --- Forecast windows -------------------------------------------------------------------------
 
-def make_windows(cfe, start=TEST_START, end=TEST_END, start_hour: int | None = START_HOUR):
+def make_windows(cfe, start=None, end=None, start_hour: int | None = START_HOUR):
     """One row per forecast: its start time, the 168 hours before it (history) and the 168 hours to
-    predict (actual). Every forecast is built from history alone. Scoring uses forecasts starting at
-    START_HOUR; start_hour=None returns a window for every hour, which XGBoost uses for training."""
+    predict (actual). Every forecast is built from history alone. Without start and end, the windows
+    of the test period. Scoring uses forecasts starting at START_HOUR; start_hour=None returns a
+    window for every hour, which XGBoost uses for training."""
+    _, test_start, test_end = split_dates(cfe)
+    start = test_start if start is None else start
+    end = test_end if end is None else end
     y, idx = cfe.to_numpy(), cfe.index
     ok = (idx >= pd.Timestamp(start)) & (idx + pd.Timedelta(hours=H) <= pd.Timestamp(end))
     if start_hour is not None:
@@ -85,9 +100,9 @@ NAIVE = {"last day": last_day, "7-day mean": mean_7d}
 #   the baseline.
 # - Two models: one for day 1 (hours 1-24) and one for days 2-7, each with the hours ahead as a feature.
 # - Training: on forecasts starting at every hour of the day, not only START_HOUR. The number of
-#   trees is chosen by early stopping: train on windows whose targets end before VAL_START, stop
-#   when the error on windows from VAL_START to TEST_START stops improving. The model is then
-#   refitted on everything before TEST_START with that number of trees.
+#   trees is chosen by early stopping: train on windows whose targets end before the validation
+#   period, stop when the error on the windows of the validation period stops improving. The model
+#   is then refitted on everything before the test period with that number of trees.
 # - Features (46):
 #     last day against the weekly profile (24)   each of the last 24 hours minus the 7-day mean of that hour
 #     level and spread (9)                       mean of each of the last 7 days; standard deviation of the
@@ -97,7 +112,7 @@ NAIVE = {"last day": last_day, "7-day mean": mean_7d}
 #     calendar (5)                               hours ahead; hour of day, day of week and day of year
 #                                                (sin, cos) of the target
 #
-# Choices checked on validation forecasts (Jan-Jun 2021), without using the test period:
+# Choices checked on validation forecasts of CarbonCast's data (Jan-Jun 2021), without using the test period:
 # - One model for all 168 hours was worse than "last day" on day 1 in the three regions tried (DE, CISO, NYISO).
 # - Predicting %CFE itself instead of the correction was worse than the 7-day mean in SE (0.95 against 0.81 pp).
 # - One model per forecast day, source-mix shares and 28-day means gave no consistent gain over this
@@ -131,10 +146,11 @@ def block_rows(block, n_forecasts):
     return np.tile((hours_ahead >= lo) & (hours_ahead <= hi), n_forecasts)
 
 def fit_xgb(cfe):
-    starts, history, actual = make_windows(cfe, cfe.index[0], TEST_START, start_hour=None)
+    val_start, test_start, _ = split_dates(cfe)
+    starts, history, actual = make_windows(cfe, cfe.index[0], test_start, start_hour=None)
     X, y = make_features(starts, history), (actual - mean_7d(history)).ravel()
-    train = np.repeat(starts + pd.Timedelta(hours=H) <= pd.Timestamp(VAL_START), H)
-    val = np.repeat(starts >= pd.Timestamp(VAL_START), H)
+    train = np.repeat(starts + pd.Timedelta(hours=H) <= val_start, H)
+    val = np.repeat(starts >= val_start, H)
     models = {}
     for block in BLOCKS:
         rows = block_rows(block, len(starts))
@@ -180,8 +196,8 @@ STYLE = {
     "legend.frameon": False,
 }
 
-def plot_example(region, starts, history, actual, forecasts, start=EXAMPLE_START):
-    i = starts.get_loc(pd.Timestamp(start))
+def plot_example(region, starts, history, actual, forecasts):
+    i = len(starts) // 2                                            # the forecast in the middle of the test period
     past = pd.date_range(end=starts[i], periods=HIST + 1, freq="h")[:-1]
     future = pd.date_range(starts[i], periods=H, freq="h")
     fig, ax = plt.subplots(figsize=(11, 3.8))
@@ -245,27 +261,40 @@ def save(fig, name):
     plt.close(fig)
     print("saved", (OUT_DIR / name).relative_to(ROOT))
 
-def main():
-    if not DATA_DIR.exists():
-        raise SystemExit(f"{DATA_DIR} is missing. Run `git submodule update --init` in the repo root first.")
+def main(data_dir=DATA_DIR):
+    data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        raise SystemExit(f"{data_dir} does not exist. Download data with `python data_collection.py electricity`, "
+                         "or run `git submodule update --init` and pass CarbonCast/data.")
+    regions = sorted(p.name for p in data_dir.iterdir() if (p / f"{p.name}_lifecycle_emissions.csv").exists())
+    if not regions:
+        raise SystemExit(f"No <REGION>/<REGION>_lifecycle_emissions.csv in {data_dir}.")
+    detail = REGION if REGION in regions else regions[0]
     plt.switch_backend("Agg")           # figures are written to files, no windows
     plt.style.use(STYLE)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # The same three forecasts for every region in CarbonCast/data/, with one XGBoost fit per region.
-    regions = sorted(p.name for p in DATA_DIR.iterdir() if (p / f"{p.name}_lifecycle_emissions.csv").exists())
+    # The same three forecasts for every region in data_dir, with one XGBoost fit per region.
     scores, mean_cfe = {}, {}
     for region in regions:
         t0 = time.time()
-        cfe = load_cfe(region)
+        cfe = load_cfe(region, data_dir)
+        val_start, test_start, test_end = split_dates(cfe)
+        if cfe.index[0] + pd.Timedelta(hours=HIST + H) > val_start:     # no room for a single training window
+            raise SystemExit(
+                f"{region}: the data in {data_dir} covers {cfe.index[0]:%Y-%m-%d} to {cfe.index[-1]:%Y-%m-%d}, which is too short. "
+                f"The last {TEST_MONTHS} months are the test period and the {VAL_MONTHS} months before are for validation, "
+                f"so the baseline needs well over {TEST_MONTHS + VAL_MONTHS} months of data. "
+                "Download a longer period with data_collection.py, or pass another folder such as CarbonCast/data.")
         starts, history, actual = make_windows(cfe)
         models = fit_xgb(cfe)
         forecasts = {name: f(history) for name, f in NAIVE.items()}
         forecasts["XGBoost"] = xgb_forecast(models, starts, history)
         scores[region] = pd.concat({name: score(actual, p) for name, p in forecasts.items()}, names=["model", "metric"])
         mean_cfe[region] = actual.mean()
-        print(f"{region}: {len(starts)} forecasts, trees {[m.n_estimators for m in models.values()]}, {time.time() - t0:.0f}s")
-        if region == REGION:
+        print(f"{region}: test {test_start:%Y-%m-%d} to {test_end - pd.Timedelta(days=1):%Y-%m-%d}, {len(starts)} forecasts, "
+              f"trees {[m.n_estimators for m in models.values()]}, {time.time() - t0:.0f}s")
+        if region == detail:
             save(plot_example(region, starts, history, actual, forecasts), f"{region}_example_forecast.png")
             save(plot_error_by_hour(region, actual, forecasts), f"{region}_error_by_hour.png")
 
@@ -276,11 +305,11 @@ def main():
 
     # One region
     by_metric = pd.MultiIndex.from_product([["MAE", "RMSE", "bias"], MODELS], names=["metric", "model"])
-    show(f"{REGION}: scores by forecast day (pp)", all_scores.loc[REGION].swaplevel().reindex(by_metric))
-    xgb_mae = all_mae.loc[(REGION, "XGBoost")]
-    show(f"{REGION}: XGBoost against the best naive baseline",
-         pd.DataFrame({"best naive, MAE (pp)": bar.loc[REGION], "XGBoost, MAE (pp)": xgb_mae,
-                       "XGBoost against best naive (%)": (xgb_mae / bar.loc[REGION] - 1) * 100}).T)
+    show(f"{detail}: scores by forecast day (pp)", all_scores.loc[detail].swaplevel().reindex(by_metric))
+    xgb_mae = all_mae.loc[(detail, "XGBoost")]
+    show(f"{detail}: XGBoost against the best naive baseline",
+         pd.DataFrame({"best naive, MAE (pp)": bar.loc[detail], "XGBoost, MAE (pp)": xgb_mae,
+                       "XGBoost against best naive (%)": (xgb_mae / bar.loc[detail] - 1) * 100}).T)
 
     # All regions. Negative percentages: XGBoost beats the best naive baseline.
     summary = all_mae["all"].unstack("model")[MODELS].rename_axis(columns=None)
@@ -299,4 +328,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="7-day %CFE baselines for every region in a data folder.")
+    parser.add_argument("data_dir", nargs="?", type=Path, default=DATA_DIR,
+                        help="folder with <REGION>/<REGION>_lifecycle_emissions.csv files "
+                             "(default: data, where data_collection.py writes)")
+    main(parser.parse_args().data_dir)

@@ -1,17 +1,28 @@
 [project]
 name = "cfe-forecast"
 version = "0.1.0"
-# Python 3.11 only, so the lock file holds one set of package versions and everyone gets
-# the numbers stored in the notebooks. uv downloads 3.11 itself if it is not installed.
-requires-python = ">=3.11,<3.12"
+# Python 3.12 only, so the lock file holds one set of package versions. entsoe-py 1.0.0 does not
+# install on older versions. uv downloads 3.12 itself if it is not installed.
+requires-python = ">=3.12,<3.13"
 dependencies = [
+    # The same versions as requirements.txt: data_collection.py and cfe_7day_baseline.py
+    "numpy==2.5.5",
+    "pandas==3.1.1",
+    "requests==2.34.2",
+    "urllib3==2.8.0",
+    "python-dotenv==1.2.4",
+    "click==8.5.1",
+    "xarray==2026.9.0",
+    "cfgrib==0.9.15.1",
+    "eccodes==2.50.1",
+    "entsoe-py==1.0.0",
+    "openelectricity==0.12.0",
+    "xgboost==3.2.0",
+    "scikit-learn==1.9.1",      # not imported directly: xgboost.XGBRegressor needs it
+    "matplotlib==3.11.2",
+    # Not in requirements.txt
     "ipykernel>=7.4.0",
     "jupyter>=1.1.1",
     "keras>=3.15.1",
-    "matplotlib>=3.11.2",
-    "numpy>=2.4.6",
-    "pandas>=3.1.1",
-    "scikit-learn>=1.9.1",      # not imported directly: xgboost.XGBRegressor needs it
     "tensorflow>=2.21.0",
-    "xgboost>=3.2.0",
 ]
