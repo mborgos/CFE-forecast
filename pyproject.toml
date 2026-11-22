@@ -1,25 +1,17 @@
 [project]
 name = "cfe-forecast"
 version = "0.1.0"
-requires-python = ">=3.11"
+# Python 3.11 only, so the lock file holds one set of package versions and everyone gets
+# the numbers stored in the notebooks. uv downloads 3.11 itself if it is not installed.
+requires-python = ">=3.11,<3.12"
 dependencies = [
-    "cfgrib>=0.9.15.1",
-    "eccodes>=2.50.1",
-    "entsoe-py>=0.8.1",
-    "matplotlib>=3.11.2",
-    "numpy>=2.4.6",
-    "openelectricity>=0.12.0",
-    "pandas>=3.1.1",
-    "requests>=2.34.2",
-    "scikit-learn>=1.9.1",
-    "tensorflow>=2.21.0",
-    "xarray>=2026.9.0",
-    "xgboost>=3.2.0",
-]
-
-[dependency-groups]
-dev = [
     "ipykernel>=7.4.0",
     "jupyter>=1.1.1",
-    "nbconvert>=7.17.2",
+    "keras>=3.15.1",
+    "matplotlib>=3.11.2",
+    "numpy>=2.4.6",
+    "pandas>=3.1.1",
+    "scikit-learn>=1.9.1",      # not imported directly: xgboost.XGBRegressor needs it
+    "tensorflow>=2.21.0",
+    "xgboost>=3.2.0",
 ]
