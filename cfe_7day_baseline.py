@@ -109,14 +109,6 @@ NAIVE = {"last day": last_day, "7-day mean": mean_7d}
 #     calendar (5)                               hours ahead; hour of day, day of week and day of year
 #                                                (sin, cos) of the target
 #
-# Choices checked on validation forecasts of CarbonCast's data (Jan-Jun 2021), without using the test period:
-# - One model for all 168 hours was worse than "last day" on day 1 in the three regions tried (DE, CISO, NYISO).
-# - Predicting %CFE itself instead of the correction was worse than the 7-day mean in SE (0.95 against 0.81 pp).
-# - One model per forecast day, source-mix shares and 28-day means gave no consistent gain over this
-#   setup (DE, CISO, NYISO, ERCO, SE).
-# - One model per hour for day 1 lowered the day-1 error by a further 1-8 % in those five regions, for
-#   24 extra models. Left out to keep this simple.
-# - Refitting on train + validation helped in 4 of the 5, checked on an earlier split.
 
 BLOCKS = {"day 1": (1, 24), f"days 2-{HORIZON_DAYS}": (25, H)}      # hours ahead covered by each model
 
