@@ -55,7 +55,6 @@ python cfe_7day_baseline.py
 ```
 
 - **Install:** its packages are in `requirements.txt`. On macOS, XGBoost also needs the OpenMP runtime: `brew install libomp`.
-- **With uv:** `uv sync` creates `.venv` with the same package versions on Python 3.12. It fails on Intel Macs, because it also installs TensorFlow, which has no build for them.
 - **Output:** tables in the terminal. In `results/cfe_7day_baseline/`: `scores_by_day.csv` (MAE, RMSE and bias for each region, model and forecast day) and three figures.
 - **Settings:** constants at the top of the file.
 
