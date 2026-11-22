@@ -48,11 +48,10 @@ Failed requests are retried, and finished days are cached, so after an interrupt
 
 ## 7-day baseline
 
-`cfe_7day_baseline.py` sets the bar for 7-day forecasts of the carbon-free energy share (%CFE): two naive baselines and an XGBoost model trained on historical lags only. It reads the `<REGION>_lifecycle_emissions.csv` files that `data_collection.py electricity` writes, and scores every region it finds. It does not use the weather.
+`cfe_7day_baseline.py` sets the bar for 7-day forecasts of the carbon-free energy share (%CFE): two naive baselines and an XGBoost model trained on historical lags only. It reads the `<REGION>_lifecycle_emissions.csv` files that `data_collection.py electricity` writes to `data/`, and scores every region it finds. It does not use the weather.
 
 ```bash
-python cfe_7day_baseline.py                   # the regions in data/
-python cfe_7day_baseline.py CarbonCast/data   # another folder with the same layout
+python cfe_7day_baseline.py
 ```
 
 - **Install:** its packages are in `requirements.txt`. On macOS, XGBoost also needs the OpenMP runtime: `brew install libomp`.
@@ -65,20 +64,11 @@ python cfe_7day_baseline.py CarbonCast/data   # another folder with the same lay
 ```python
 from cfe_7day_baseline import load_cfe, make_windows, score
 
-cfe = load_cfe("DE")                          # from data/; load_cfe("DE", "CarbonCast/data") for another folder
+cfe = load_cfe("DE")                          # hourly %CFE, from data/DE/
 starts, history, actual = make_windows(cfe)   # the forecasts of the test period
 print(score(actual, my_forecast))             # my_forecast: one row per forecast, 168 columns
 ```
 
-### Committed results
-
-The files in `results/cfe_7day_baseline/` come from CarbonCast's own data: 13 regions, 2020–2021, tested on Jul–Dec 2021. The `CarbonCast` directory is a git submodule of the original project. To reproduce them (about 2 minutes):
-
-```bash
-git submodule update --init                   # downloads the CarbonCast data: about 190 MB, 0.9 GB on disk
-python cfe_7day_baseline.py CarbonCast/data
-```
-
-Avoid `git clone --recurse-submodules`: it downloads every branch of CarbonCast, which is far larger.
+The files now in `results/cfe_7day_baseline/` were computed on CarbonCast's published data: 13 regions, 2020–2021, tested on Jul–Dec 2021. Running the script on downloaded data replaces them.
 
 ![MAE over the 7-day window, all regions](results/cfe_7day_baseline/all_regions_mae.png)

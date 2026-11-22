@@ -1,5 +1,4 @@
 
-import argparse
 from pathlib import Path
 import time
 
@@ -28,22 +27,20 @@ HIST = 24 * 7                       # hours of history each forecast is given
 DAYS = [f"day {k}" for k in range(1, HORIZON_DAYS + 1)] + ["all"]
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"            # where data_collection.py writes; CarbonCast/data has the same layout
+DATA_DIR = ROOT / "data"            # where data_collection.py writes
 OUT_DIR = ROOT / "results" / "cfe_7day_baseline"
 
 
 # --- The %CFE series --------------------------------------------------------------------------
 
-def load_cfe(region, data_dir=DATA_DIR, cfe_sources=CFE_SOURCES):
-    """Hourly %CFE of a region, from <data_dir>/<region>/<region>_lifecycle_emissions.csv. Negative
-    generation is set to zero, gaps of up to 3 hours are interpolated and longer ones carried forward."""
-    df = pd.read_csv(Path(data_dir) / region / f"{region}_lifecycle_emissions.csv")
-    df.index = pd.to_datetime(df.pop("UTC time"), utc=True).dt.tz_localize(None)   # some files carry +00:00
-    sources = [c for c in df.columns if c != "carbon_intensity" and not c.startswith("Unnamed")]
-    gen = df[sources].clip(lower=0)
-    gen = gen[~gen.index.duplicated()].asfreq("h").interpolate(limit=3).ffill()
+def load_cfe(region, cfe_sources=CFE_SOURCES):
+    """Hourly %CFE of a region, from the <region>_lifecycle_emissions.csv that data_collection.py writes:
+    every hour present, no gaps and no negative generation. An hour with no generation at all takes the
+    previous hour's value."""
+    df = pd.read_csv(DATA_DIR / region / f"{region}_lifecycle_emissions.csv", index_col=0, parse_dates=["UTC time"])
+    gen = df.set_index("UTC time").drop(columns="carbon_intensity")
     total = gen.sum(axis=1).replace(0, np.nan)
-    cfe = gen[[c for c in sources if c in cfe_sources]].sum(axis=1) / total * 100
+    cfe = gen[[c for c in gen.columns if c in cfe_sources]].sum(axis=1) / total * 100
     return cfe.ffill().rename("cfe")
 
 
@@ -261,31 +258,28 @@ def save(fig, name):
     plt.close(fig)
     print("saved", (OUT_DIR / name).relative_to(ROOT))
 
-def main(data_dir=DATA_DIR):
-    data_dir = Path(data_dir)
-    if not data_dir.is_dir():
-        raise SystemExit(f"{data_dir} does not exist. Download data with `python data_collection.py electricity`, "
-                         "or run `git submodule update --init` and pass CarbonCast/data.")
-    regions = sorted(p.name for p in data_dir.iterdir() if (p / f"{p.name}_lifecycle_emissions.csv").exists())
+def main():
+    regions = sorted(p.name for p in DATA_DIR.glob("*") if (p / f"{p.name}_lifecycle_emissions.csv").exists())
     if not regions:
-        raise SystemExit(f"No <REGION>/<REGION>_lifecycle_emissions.csv in {data_dir}.")
+        raise SystemExit(f"No <REGION>/<REGION>_lifecycle_emissions.csv in {DATA_DIR}. "
+                         "Download the data with `python data_collection.py electricity` first.")
     detail = REGION if REGION in regions else regions[0]
     plt.switch_backend("Agg")           # figures are written to files, no windows
     plt.style.use(STYLE)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # The same three forecasts for every region in data_dir, with one XGBoost fit per region.
+    # The same three forecasts for every region in data/, with one XGBoost fit per region.
     scores, mean_cfe = {}, {}
     for region in regions:
         t0 = time.time()
-        cfe = load_cfe(region, data_dir)
+        cfe = load_cfe(region)
         val_start, test_start, test_end = split_dates(cfe)
         if cfe.index[0] + pd.Timedelta(hours=HIST + H) > val_start:     # no room for a single training window
             raise SystemExit(
-                f"{region}: the data in {data_dir} covers {cfe.index[0]:%Y-%m-%d} to {cfe.index[-1]:%Y-%m-%d}, which is too short. "
+                f"{region}: the data covers {cfe.index[0]:%Y-%m-%d} to {cfe.index[-1]:%Y-%m-%d}, which is too short. "
                 f"The last {TEST_MONTHS} months are the test period and the {VAL_MONTHS} months before are for validation, "
                 f"so the baseline needs well over {TEST_MONTHS + VAL_MONTHS} months of data. "
-                "Download a longer period with data_collection.py, or pass another folder such as CarbonCast/data.")
+                "Download a longer period with data_collection.py.")
         starts, history, actual = make_windows(cfe)
         models = fit_xgb(cfe)
         forecasts = {name: f(history) for name, f in NAIVE.items()}
@@ -328,8 +322,4 @@ def main(data_dir=DATA_DIR):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="7-day %CFE baselines for every region in a data folder.")
-    parser.add_argument("data_dir", nargs="?", type=Path, default=DATA_DIR,
-                        help="folder with <REGION>/<REGION>_lifecycle_emissions.csv files "
-                             "(default: data, where data_collection.py writes)")
-    main(parser.parse_args().data_dir)
+    main()
