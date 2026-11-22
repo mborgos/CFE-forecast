@@ -56,19 +56,7 @@ python cfe_7day_baseline.py
 
 - **Install:** its packages are in `requirements.txt`. On macOS, XGBoost also needs the OpenMP runtime: `brew install libomp`.
 - **With uv:** `uv sync` creates `.venv` with the same package versions on Python 3.12. It fails on Intel Macs, because it also installs TensorFlow, which has no build for them.
-- **Data needed:** the last 6 months of the data are the test period and the 6 months before that are used for validation, so it needs well over 12 months. The example data in `data/` covers four days, which is too short.
 - **Output:** tables in the terminal. In `results/cfe_7day_baseline/`: `scores_by_day.csv` (MAE, RMSE and bias for each region, model and forecast day) and three figures.
 - **Settings:** constants at the top of the file.
-- **Scoring another model:** import the data loading, the forecast windows and the scoring from this file:
 
-```python
-from cfe_7day_baseline import load_cfe, make_windows, score
 
-cfe = load_cfe("DE")                          # hourly %CFE, from data/DE/
-starts, history, actual = make_windows(cfe)   # the forecasts of the test period
-print(score(actual, my_forecast))             # my_forecast: one row per forecast, 168 columns
-```
-
-The files now in `results/cfe_7day_baseline/` were computed on CarbonCast's published data: 13 regions, 2020–2021, tested on Jul–Dec 2021. Running the script on downloaded data replaces them.
-
-![MAE over the 7-day window, all regions](results/cfe_7day_baseline/all_regions_mae.png)
