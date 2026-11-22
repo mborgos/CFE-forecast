@@ -11,21 +11,11 @@ CarbonCast (https://github.com/carbonfirst/CarbonCast) was used as a reference w
 
 ## Install
 
-Python 3.12. Older versions cannot install `entsoe-py` 1.0.0.
+Python 3.10 or newer.
 
 ```bash
 pip install -r requirements.txt
 ```
-
-Or with [uv](https://docs.astral.sh/uv/getting-started/installation/), which creates `.venv` with Python 3.12 and the same package versions:
-
-```bash
-uv sync
-```
-
-- **macOS:** `cfe_7day_baseline.py` uses XGBoost, which needs the OpenMP runtime. Install it once with `brew install libomp`.
-- **Intel Macs:** use `pip`. `uv sync` fails there, because it also installs TensorFlow, which has no build for them.
-- **VS Code:** select the interpreter in `.venv` to run the scripts from the editor.
 
 ## Configure
 
@@ -65,6 +55,8 @@ python cfe_7day_baseline.py                   # the regions in data/
 python cfe_7day_baseline.py CarbonCast/data   # another folder with the same layout
 ```
 
+- **Install:** its packages are in `requirements.txt`. On macOS, XGBoost also needs the OpenMP runtime: `brew install libomp`.
+- **With uv:** `uv sync` creates `.venv` with the same package versions on Python 3.12. It fails on Intel Macs, because it also installs TensorFlow, which has no build for them.
 - **Data needed:** the last 6 months of the data are the test period and the 6 months before that are used for validation, so it needs well over 12 months. The example data in `data/` covers four days, which is too short.
 - **Output:** tables in the terminal. In `results/cfe_7day_baseline/`: `scores_by_day.csv` (MAE, RMSE and bias for each region, model and forecast day) and three figures.
 - **Settings:** constants at the top of the file.
