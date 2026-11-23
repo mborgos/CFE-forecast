@@ -1,15 +1,17 @@
 
 from pathlib import Path
+import argparse
 import time
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import lightgbm as lgb
 import xgboost as xgb
 
 
-REGION = "DE"                       # region of the detailed tables and figures (the first region found if it has no data); all regions are scored
+REGION = "CISO"                       # region of the detailed tables and figures (the first region found if it has no data); all regions are scored
 INCLUDE_BIOMASS_AS_CFE = False      # definitions differ; keep it explicit
 CFE_SOURCES = ["nuclear", "hydro", "solar", "wind", "geothermal"] + (["biomass"] if INCLUDE_BIOMASS_AS_CFE else [])
 
@@ -20,6 +22,9 @@ VAL_MONTHS = 6                      # the months before the test period: XGBoost
 
 XGB_PARAMS = dict(learning_rate=0.05, max_depth=6, min_child_weight=20, subsample=0.8, colsample_bytree=0.8,
                   tree_method="hist", random_state=0, n_jobs=-1)
+LGB_PARAMS = dict(learning_rate=0.05, num_leaves=63, max_depth=6, min_child_samples=20, subsample=0.8, subsample_freq=1,
+                  colsample_bytree=0.8, random_state=0, n_jobs=-1, verbose=-1)      # matched to XGB_PARAMS
+QUANTILES = [0.1, 0.5, 0.9]         # LightGBM quantile: the median is its point forecast, 0.1-0.9 its 80% interval
 MAX_TREES, PATIENCE = 3000, 50      # early stopping
 
 H = 24 * HORIZON_DAYS               # hours to predict
@@ -33,15 +38,15 @@ OUT_DIR = ROOT / "results" / "cfe_7day_baseline"
 
 # --- The %CFE series --------------------------------------------------------------------------
 
-def load_cfe(region, cfe_sources=CFE_SOURCES):
+def load_cfe(region, cfe_sources=CFE_SOURCES, start=None, end=None):
     """Hourly %CFE of a region, from the <region>_lifecycle_emissions.csv that data_collection.py writes:
     every hour present, no gaps and no negative generation. An hour with no generation at all takes the
-    previous hour's value."""
+    previous hour's value. start and end (dates such as "2024-01-01", end included) keep only that period."""
     df = pd.read_csv(DATA_DIR / region / f"{region}_lifecycle_emissions.csv", index_col=0, parse_dates=["UTC time"])
     gen = df.set_index("UTC time").drop(columns="carbon_intensity")
     total = gen.sum(axis=1).replace(0, np.nan)
     cfe = gen[[c for c in gen.columns if c in cfe_sources]].sum(axis=1) / total * 100
-    return cfe.ffill().rename("cfe")
+    return cfe.ffill().rename("cfe").loc[start:end]
 
 
 # --- Train, validation and test periods -------------------------------------------------------
@@ -61,7 +66,7 @@ def make_windows(cfe, start=None, end=None, start_hour: int | None = START_HOUR)
     """One row per forecast: its start time, the 168 hours before it (history) and the 168 hours to
     predict (actual). Every forecast is built from history alone. Without start and end, the windows
     of the test period. Scoring uses forecasts starting at START_HOUR; start_hour=None returns a
-    window for every hour, which XGBoost uses for training."""
+    window for every hour, which XGBoost and LightGBM use for training."""
     _, test_start, test_end = split_dates(cfe)
     start = test_start if start is None else start
     end = test_end if end is None else end
@@ -157,6 +162,38 @@ def xgb_forecast(models, starts, history):
     return np.clip(mean_7d(history) + correction.reshape(len(starts), H), 0, 100)
 
 
+# --- LightGBM on lags -------------------------------------------------------------------------
+# Predicts %CFE directly, with one model for all hours ahead (hours ahead is one of its features).
+# Same features and training scheme as XGBoost: early stopping on the validation period, then a
+# refit on everything before the test period. Forecasts are clipped to 0-100.
+# - LightGBM: squared error, early stopping on validation MAE.
+# - LightGBM quantile: one model per quantile in QUANTILES, trained with the pinball loss and
+#   early-stopped on it. Its point forecast is the median.
+
+def fit_lgb(cfe, alpha=None):
+    """One model for all hours ahead. alpha=None: squared error; otherwise the alpha quantile."""
+    val_start, test_start, _ = split_dates(cfe)
+    starts, history, actual = make_windows(cfe, cfe.index[0], test_start, start_hour=None)
+    X, y = make_features(starts, history), actual.ravel()
+    train = np.repeat(starts + pd.Timedelta(hours=H) <= val_start, H)
+    val = np.repeat(starts >= val_start, H)
+    loss = dict(objective="regression") if alpha is None else dict(objective="quantile", alpha=alpha)
+    metric = "l1" if alpha is None else "quantile"
+    stopper = lgb.LGBMRegressor(n_estimators=MAX_TREES, **loss, **LGB_PARAMS)
+    stopper.fit(X[train], y[train], eval_X=(X[val],), eval_y=(y[val],), eval_metric=metric, callbacks=[lgb.early_stopping(PATIENCE, verbose=False)])
+    return lgb.LGBMRegressor(n_estimators=max(stopper.best_iteration_, 1), **loss, **LGB_PARAMS).fit(X, y)
+
+def lgb_forecast(model, starts, history):
+    return np.clip(model.predict(make_features(starts, history)).reshape(len(starts), H), 0, 100)
+
+def fit_lgb_quantiles(cfe):
+    return {q: fit_lgb(cfe, alpha=q) for q in QUANTILES}
+
+def lgb_quantile_forecast(models_by_q, starts, history):
+    """(forecast, hour ahead, quantile) array. Sorting each row keeps the quantiles from crossing."""
+    return np.sort(np.stack([lgb_forecast(m, starts, history) for m in models_by_q.values()], axis=-1), axis=-1)
+
+
 # --- Scores -----------------------------------------------------------------------------------
 
 def score(actual, forecast):
@@ -167,11 +204,30 @@ def score(actual, forecast):
                          "RMSE": per_day(lambda x: np.sqrt((x ** 2).mean())),
                          "bias": per_day(np.mean)}, index=DAYS).T
 
+def score_quantiles(actual, quantiles):
+    """Pinball loss of each quantile, and coverage (%) and width (pp) of the lowest-to-highest
+    interval, for each forecast day and the whole window."""
+    a = actual.reshape(len(actual), HORIZON_DAYS, 24)
+    q = quantiles.reshape(len(actual), HORIZON_DAYS, 24, len(QUANTILES))
+    per_day = lambda x: [x[:, k].mean() for k in range(HORIZON_DAYS)] + [x.mean()]
+    rows = {}
+    for j, alpha in enumerate(QUANTILES):
+        diff = a - q[..., j]
+        rows[f"pinball q{alpha:g}"] = per_day(np.maximum(alpha * diff, (alpha - 1) * diff))
+    lo, hi = q[..., 0], q[..., -1]
+    level = round((QUANTILES[-1] - QUANTILES[0]) * 100)
+    rows[f"{level}% coverage (%)"] = per_day(((a >= lo) & (a <= hi)) * 100.0)
+    rows[f"{level}% width"] = per_day(hi - lo)
+    return pd.DataFrame(rows, index=DAYS).T
+
 
 # --- Figures ----------------------------------------------------------------------------------
 
-COLORS = {"last day": "#2a78d6", "7-day mean": "#eb6834", "XGBoost": "#1baf7a"}     # one fixed colour per model, in every chart
+COLORS = {"last day": "#2a78d6", "7-day mean": "#eb6834", "XGBoost": "#1baf7a",
+          "LightGBM": "#8a4fd0", "LightGBM quantile": "#d4417a"}      # one fixed colour per model, in every chart
 MODELS = list(COLORS)
+LEARNED = [m for m in MODELS if m not in NAIVE] # the models compared with the best naive baseline
+CLI_NAMES = {m.lower().replace(" ", "-"): m for m in LEARNED} # --models names: xgboost, lightgbm, lightgbm-quantile
 INK, MUTED, AXIS, GRID, SURFACE = "#52514e", "#898781", "#c3c2b7", "#e1e0d9", "#fcfcfb"
 STYLE = {
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
@@ -185,11 +241,16 @@ STYLE = {
     "legend.frameon": False,
 }
 
-def plot_example(region, starts, history, actual, forecasts):
+def plot_example(region, starts, history, actual, forecasts, band=None):
+    """band: optional (n, H, len(QUANTILES)) quantile forecasts, drawn as the LightGBM quantile interval."""
     i = len(starts) // 2                                            # the forecast in the middle of the test period
     past = pd.date_range(end=starts[i], periods=HIST + 1, freq="h")[:-1]
     future = pd.date_range(starts[i], periods=H, freq="h")
     fig, ax = plt.subplots(figsize=(11, 3.8))
+    if band is not None:
+        level = round((QUANTILES[-1] - QUANTILES[0]) * 100)
+        ax.fill_between(future, band[i, :, 0], band[i, :, -1], color=COLORS["LightGBM quantile"], alpha=0.15,
+                        linewidth=0, label=f"LightGBM {level}% interval")
     ax.plot(past.append(future), np.r_[history[i], actual[i]], color=INK, label="actual")
     for name, p in forecasts.items():
         ax.plot(future, p[i], color=COLORS[name], label=name)
@@ -201,7 +262,7 @@ def plot_example(region, starts, history, actual, forecasts):
     ax.margins(x=0, y=0.12)
     ax.set_ylabel("%CFE")
     ax.set_title(f"{region}: one forecast and the 7 days of history it is built from", pad=28)
-    ax.legend(ncol=4, loc="lower left", bbox_to_anchor=(-0.01, 1.0))
+    ax.legend(ncol=7, loc="lower left", bbox_to_anchor=(-0.01, 1.0))
     return fig
 
 def plot_error_by_hour(region, actual, forecasts):
@@ -218,16 +279,16 @@ def plot_error_by_hour(region, actual, forecasts):
     ax.set_xlabel("hours ahead")
     ax.set_ylabel("MAE (pp)")
     ax.set_title(f"{region}: error by hour ahead, {len(actual)} forecasts")
-    ax.legend(loc="lower right", ncol=3)
+    ax.legend(loc="lower right", ncol=5)
     return fig
 
-def plot_regions(summary):
+def plot_regions(summary, models):
     order = summary.sort_values("7-day mean").index                # hardest region at the top
     ypos = np.arange(len(order))
-    shown = summary.loc[order, MODELS]
+    shown = summary.loc[order, models]
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hlines(ypos, shown.min(axis=1), shown.max(axis=1), color=AXIS, linewidth=1.5, zorder=1)
-    for name in MODELS:
+    for name in models:
         ax.plot(shown[name], ypos, "o", color=COLORS[name], markersize=8,
                 markeredgecolor=SURFACE, markeredgewidth=1.5, label=name, zorder=2)
     ax.set_yticks(ypos, order)
@@ -250,68 +311,150 @@ def save(fig, name):
     plt.close(fig)
     print("saved", (OUT_DIR / name).relative_to(ROOT))
 
-def main():
+def parse_settings(argv=None):
+    """Command-line settings: which regions to score and which period of their data to use."""
+    def date(text):
+        pd.Timestamp(text) # fails on anything that is not a date
+        return text
+    p = argparse.ArgumentParser(description="Naive, XGBoost and LightGBM baselines for forecasting hourly %CFE.")
+    p.add_argument("--regions", nargs="+", metavar="REGION", help=f"regions to score (default: every region in the data folder).")
+    p.add_argument("--start", type=date, metavar="DATE", help="first day of data to use, e.g. 2023-01-01 (default: the first day available)")
+    p.add_argument("--end", type=date, metavar="DATE", help="last day of data to use, included (default: the last day available)")
+    p.add_argument("--models", nargs="+", choices=list(CLI_NAMES), metavar="MODEL", help=f"learned models to run, from: {', '.join(CLI_NAMES)} (default: all).")
+    p.add_argument("--save-forecasts", action="store_true", help="Saves every forecast to forecasts/<REGION>_forecasts.csv in the results folder")
+    s = p.parse_args(argv)
+    s.models = [m for m in LEARNED if s.models is None or m in {CLI_NAMES[c] for c in s.models}]
+    if s.start and s.end and pd.Timestamp(s.start) > pd.Timestamp(s.end):
+        p.error("--start must not be after --end")
+    return s
+
+def find_regions(wanted=None):
     regions = sorted(p.name for p in DATA_DIR.glob("*") if (p / f"{p.name}_lifecycle_emissions.csv").exists())
+    if wanted:
+        missing = sorted(set(wanted) - set(regions))
+        if missing:
+            raise SystemExit(f"No data for {', '.join(missing)} in {DATA_DIR}. Regions with data: {', '.join(regions) or 'none'}.")
+        regions = sorted(wanted)
     if not regions:
         raise SystemExit(f"No <REGION>/<REGION>_lifecycle_emissions.csv in {DATA_DIR}. "
                          "Download the data with `python data_collection.py electricity` first.")
-    detail = REGION if REGION in regions else regions[0]
-    plt.switch_backend("Agg")           # figures are written to files, no windows
-    plt.style.use(STYLE)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    return regions
 
-    # The same three forecasts for every region in data/, with one XGBoost fit per region.
-    scores, mean_cfe = {}, {}
-    for region in regions:
-        t0 = time.time()
-        cfe = load_cfe(region)
-        val_start, test_start, test_end = split_dates(cfe)
-        if cfe.index[0] + pd.Timedelta(hours=HIST + H) > val_start:     # no room for a single training window
-            raise SystemExit(
-                f"{region}: the data covers {cfe.index[0]:%Y-%m-%d} to {cfe.index[-1]:%Y-%m-%d}, which is too short. "
-                f"The last {TEST_MONTHS} months are the test period and the {VAL_MONTHS} months before are for validation, "
-                f"so the baseline needs well over {TEST_MONTHS + VAL_MONTHS} months of data. "
-                "Download a longer period with data_collection.py.")
-        starts, history, actual = make_windows(cfe)
+def load_region(region, start=None, end=None):
+    """load_cfe, stopping with a clear message if the period is empty or too short to train on."""
+    cfe = load_cfe(region, start=start, end=end)
+    if cfe.empty:
+        raise SystemExit(f"{region}: no data between {start or 'the start'} and {end or 'the end'}.")
+    val_start, _, _ = split_dates(cfe)
+    if cfe.index[0] + pd.Timedelta(hours=HIST + H) > val_start: # no room for a single training window
+        raise SystemExit(
+            f"{region}: the data covers {cfe.index[0]:%Y-%m-%d} to {cfe.index[-1]:%Y-%m-%d}, which is too short. "
+            f"The last {TEST_MONTHS} months are the test period and the {VAL_MONTHS} months before are for validation, "
+            f"so the baseline needs well over {TEST_MONTHS + VAL_MONTHS} months of data. "
+            "Choose a longer period with --start/--end, or download more data with data_collection.py.")
+    return cfe
+
+def run_models(cfe, starts, history, learned):
+    forecasts = {name: f(history) for name, f in NAIVE.items()}
+    quantiles, trees = None, []
+    if "XGBoost" in learned:
         models = fit_xgb(cfe)
-        forecasts = {name: f(history) for name, f in NAIVE.items()}
         forecasts["XGBoost"] = xgb_forecast(models, starts, history)
-        scores[region] = pd.concat({name: score(actual, p) for name, p in forecasts.items()}, names=["model", "metric"])
-        mean_cfe[region] = actual.mean()
-        print(f"{region}: test {test_start:%Y-%m-%d} to {test_end - pd.Timedelta(days=1):%Y-%m-%d}, {len(starts)} forecasts, "
-              f"trees {[m.n_estimators for m in models.values()]}, {time.time() - t0:.0f}s")
-        if region == detail:
-            save(plot_example(region, starts, history, actual, forecasts), f"{region}_example_forecast.png")
-            save(plot_error_by_hour(region, actual, forecasts), f"{region}_error_by_hour.png")
+        trees.append(f"XGBoost {[m.n_estimators for m in models.values()]}")
+    if "LightGBM" in learned:
+        model = fit_lgb(cfe)
+        forecasts["LightGBM"] = lgb_forecast(model, starts, history)
+        trees.append(f"LightGBM {model.n_estimators}")
+    if "LightGBM quantile" in learned:
+        models = fit_lgb_quantiles(cfe)
+        quantiles = lgb_quantile_forecast(models, starts, history)
+        forecasts["LightGBM quantile"] = quantiles[..., QUANTILES.index(0.5)]
+        trees.append(f"LightGBM quantile {[m.n_estimators for m in models.values()]}")
+    return forecasts, quantiles, trees
 
+def report(scores, q_scores, mean_cfe, detail, learned):
+    models = list(NAIVE) + learned
     all_scores = pd.concat(scores, names=["region"])
     all_mae = all_scores.xs("MAE", level="metric")
     bar = all_mae[all_mae.index.get_level_values("model").isin(list(NAIVE))].groupby(level="region").min()
     bar["all"] = bar[DAYS[:-1]].mean(axis=1)                        # best naive
+    all_q = pd.concat(q_scores, names=["region", "metric"]) if q_scores else None
 
     # One region
-    by_metric = pd.MultiIndex.from_product([["MAE", "RMSE", "bias"], MODELS], names=["metric", "model"])
+    by_metric = pd.MultiIndex.from_product([["MAE", "RMSE", "bias"], models], names=["metric", "model"])
     show(f"{detail}: scores by forecast day (pp)", all_scores.loc[detail].swaplevel().reindex(by_metric))
-    xgb_mae = all_mae.loc[(detail, "XGBoost")]
-    show(f"{detail}: XGBoost against the best naive baseline",
-         pd.DataFrame({"best naive, MAE (pp)": bar.loc[detail], "XGBoost, MAE (pp)": xgb_mae,
-                       "XGBoost against best naive (%)": (xgb_mae / bar.loc[detail] - 1) * 100}).T)
+    against = {"best naive, MAE (pp)": bar.loc[detail]}
+    for name in learned:
+        mae = all_mae.loc[(detail, name)]
+        against[f"{name}, MAE (pp)"] = mae
+        against[f"{name} against best naive (%)"] = (mae / bar.loc[detail] - 1) * 100
+    show(f"{detail}: learned models against the best naive baseline", pd.DataFrame(against).T)
+    if all_q is not None:
+        show(f"{detail}: LightGBM quantile, pinball loss (pp) and interval", all_q.loc[detail])
 
-    # All regions. Negative percentages: XGBoost beats the best naive baseline.
-    summary = all_mae["all"].unstack("model")[MODELS].rename_axis(columns=None)
+    # All regions
+    summary = all_mae["all"].unstack("model")[models].rename_axis(columns=None)
     summary.insert(0, "mean %CFE", pd.Series(mean_cfe))
     summary["best naive"] = bar["all"]
-    summary["XGBoost against best naive (%)"] = (summary["XGBoost"] / summary["best naive"] - 1) * 100
+    for name in learned:
+        summary[f"{name} against best naive (%)"] = (summary[name] / summary["best naive"] - 1) * 100
     show("All regions: MAE over the 7-day window (pp)", summary)
-    show("All regions: XGBoost against best naive by forecast day (%)",
-         (all_mae.xs("XGBoost", level="model") / bar - 1) * 100, decimals=1)
+    for name in learned:
+        show(f"All regions: {name} against best naive by forecast day (%)",
+             (all_mae.xs(name, level="model") / bar - 1) * 100, decimals=1)
     show("All regions: MAE by forecast day (pp)", all_mae)
+    if all_q is not None:
+        show("All regions: LightGBM quantile over the 7-day window", all_q["all"].unstack("metric"))
 
     print()
-    save(plot_regions(summary), "all_regions_mae.png")
+    save(plot_regions(summary, models), "all_regions_mae.png")
     all_scores.round(4).to_csv(OUT_DIR / "scores_by_day.csv")
     print("saved", (OUT_DIR / "scores_by_day.csv").relative_to(ROOT))
+    if all_q is not None:
+        all_q.round(4).to_csv(OUT_DIR / "quantile_scores_by_day.csv")
+        print("saved", (OUT_DIR / "quantile_scores_by_day.csv").relative_to(ROOT))
 
+def forecast_table(starts, actual, forecasts, quantiles=None):
+    table = pd.DataFrame({"forecast start": np.repeat(starts, H),
+                          "target time": (starts.values[:, None] + np.arange(H).astype("timedelta64[h]")).ravel(),
+                          "hours ahead": np.tile(np.arange(1, H + 1), len(starts)),
+                          "actual": actual.ravel()})
+    for name, p in forecasts.items():
+        table[name] = p.ravel()
+    if quantiles is not None:
+        for j, alpha in enumerate(QUANTILES):
+            if alpha != 0.5:
+                table[f"LightGBM quantile q{alpha:g}"] = quantiles[..., j].ravel()
+    return table
+
+def main(argv=None):
+    settings = parse_settings(argv)
+    regions = find_regions(settings.regions)
+    detail = REGION if REGION in regions else regions[0]
+    plt.switch_backend("Agg")           # figures are written to files, no windows
+    plt.style.use(STYLE)
+    (OUT_DIR / "forecasts" if settings.save_forecasts else OUT_DIR).mkdir(parents=True, exist_ok=True)
+
+    scores, q_scores, mean_cfe = {}, {}, {}
+    for region in regions:
+        t0 = time.time()
+        cfe = load_region(region, settings.start, settings.end)
+        _, test_start, test_end = split_dates(cfe)
+        starts, history, actual = make_windows(cfe)
+        forecasts, quantiles, trees = run_models(cfe, starts, history, settings.models)
+        scores[region] = pd.concat({name: score(actual, p) for name, p in forecasts.items()}, names=["model", "metric"])
+        if quantiles is not None:
+            q_scores[region] = score_quantiles(actual, quantiles)
+        mean_cfe[region] = actual.mean()
+        if settings.save_forecasts:
+            forecast_table(starts, actual, forecasts, quantiles).to_csv(OUT_DIR / "forecasts" / f"{region}_forecasts.csv", index=False, float_format="%.3f")
+        print(f"{region}: test {test_start:%Y-%m-%d} to {test_end - pd.Timedelta(days=1):%Y-%m-%d}, {len(starts)} forecasts, "
+              + (f"trees {', '.join(trees)}, " if trees else "") + f"{time.time() - t0:.0f}s")
+        if region == detail:
+            save(plot_example(region, starts, history, actual, forecasts, band=quantiles), f"{region}_example_forecast.png")
+            save(plot_error_by_hour(region, actual, forecasts), f"{region}_error_by_hour.png")
+
+    report(scores, q_scores, mean_cfe, detail, settings.models)
 
 if __name__ == "__main__":
     main()
