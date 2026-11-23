@@ -11,5 +11,6 @@ entsoe-py==1.0.0
 openelectricity==0.12.0
 # cfe_7day_baseline.py
 xgboost==3.2.0
+lightgbm==4.7.0
 scikit-learn==1.9.1
 matplotlib==3.11.2
