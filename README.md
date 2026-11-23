@@ -45,3 +45,17 @@ python data_collection.py weather
 ```
 
 Failed requests are retried, and finished days are cached, so after an interruption run the same command.
+
+## 7-day baseline
+
+`cfe_7day_baseline.py` sets the bar for 7-day forecasts of the carbon-free energy share (%CFE): two naive baselines and an XGBoost model trained on historical lags only. It reads the `<REGION>_lifecycle_emissions.csv` files that `data_collection.py electricity` writes to `data/`, and scores every region it finds. It does not use the weather.
+
+```bash
+python cfe_7day_baseline.py
+```
+
+- **Install:** its packages are in `requirements.txt`. On macOS, XGBoost also needs the OpenMP runtime: `brew install libomp`.
+- **Output:** tables in the terminal. In `results/cfe_7day_baseline/`: `scores_by_day.csv` (MAE, RMSE and bias for each region, model and forecast day) and three figures.
+- **Settings:** constants at the top of the file.
+
+
