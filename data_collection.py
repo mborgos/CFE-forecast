@@ -33,6 +33,10 @@ class RegionData:
     code: str
     bbox: Bounding_box
     tz: str
+    # ENTSO-E only: bidding zones used for cross-border flows, when they differ from `code`
+    # (flows are published per bidding zone, e.g. Germany is DE_LU, Sweden is SE_1..SE_4).
+    # Borders between zones listed here are internal and are skipped.
+    flow_zones: tuple[str, ...] = ()
 
 load_dotenv('config.env')
 
@@ -87,28 +91,28 @@ def main():
 
 REGIONS_DATA_MAP = {
     # --- US (EIA-930 balancing authorities) ---
-    "CISO":  RegionData(provider="eia", code="CISO", bbox=Bounding_box(nlat=42, slat=32, wlon=-124.75, elon=-113.5),   tz="US/Pacific"),
-    "PJM":   RegionData(provider="eia", code="PJM",  bbox=Bounding_box(nlat=43, slat=34.25, wlon=-91, elon=-73.5),     tz="US/Eastern"),
+    "CISO":  RegionData(provider="eia", code="CISO", bbox=Bounding_box(nlat=42, slat=32, wlon=-124.75, elon=-113.5),     tz="US/Pacific"),
+    "PJM":   RegionData(provider="eia", code="PJM",  bbox=Bounding_box(nlat=43, slat=34.25, wlon=-91, elon=-73.5),       tz="US/Eastern"),
     "ERCO":  RegionData(provider="eia", code="ERCO", bbox=Bounding_box(nlat=36.5, slat=25.25, wlon=-104.5, elon=-93.25), tz="US/Central"),
-    "ISNE":  RegionData(provider="eia", code="ISNE", bbox=Bounding_box(nlat=48, slat=40, wlon=-74.25, elon=-66.5),     tz="US/Eastern"),
-    "NYISO": RegionData(provider="eia", code="NYIS", bbox=Bounding_box(nlat=45.5, slat=40, wlon=-80.25, elon=-71.25),  tz="US/Eastern"),
-    "FPL":   RegionData(provider="eia", code="FPL",  bbox=Bounding_box(nlat=31.25, slat=24, wlon=-83.5, elon=-79.5),   tz="US/Eastern"),
+    "ISNE":  RegionData(provider="eia", code="ISNE", bbox=Bounding_box(nlat=48, slat=40, wlon=-74.25, elon=-66.5),       tz="US/Eastern"),
+    "NYISO": RegionData(provider="eia", code="NYIS", bbox=Bounding_box(nlat=45.5, slat=40, wlon=-80.25, elon=-71.25),    tz="US/Eastern"),
+    "FPL":   RegionData(provider="eia", code="FPL",  bbox=Bounding_box(nlat=31.25, slat=24, wlon=-83.5, elon=-79.5),     tz="US/Eastern"),
     "BPAT":  RegionData(provider="eia", code="BPAT", bbox=Bounding_box(nlat=49.5, slat=39.5, wlon=-125.25, elon=-105.5), tz="US/Pacific"),
-    "MISO":  RegionData(provider="eia", code="MISO", bbox=Bounding_box(nlat=50, slat=28.5, wlon=-107.75, elon=-81.75), tz="US/Eastern"),
+    "MISO":  RegionData(provider="eia", code="MISO", bbox=Bounding_box(nlat=50, slat=28.5, wlon=-107.75, elon=-81.75),   tz="US/Eastern"),
     "SWPP":  RegionData(provider="eia", code="SWPP", bbox=Bounding_box(nlat=49.5, slat=30.25, wlon=-107.75, elon=-89.5), tz="US/Central"),
-    "SOCO":  RegionData(provider="eia", code="SOCO", bbox=Bounding_box(nlat=35.5, slat=29.25, wlon=-90.5, elon=-80.25), tz="US/Central"),
+    "SOCO":  RegionData(provider="eia", code="SOCO", bbox=Bounding_box(nlat=35.5, slat=29.25, wlon=-90.5, elon=-80.25),  tz="US/Central"),
     # --- Europe (ENTSO-E areas) ---
-    "DE":    RegionData(provider="entsoe", code="DE",   bbox=Bounding_box(nlat=55.25, slat=47.25, wlon=5.75, elon=15),  tz="CET"),
-    "NL":    RegionData(provider="entsoe", code="NL",   bbox=Bounding_box(nlat=53.5, slat=50.75, wlon=3.25, elon=7),    tz="CET"),
-    "ES":    RegionData(provider="entsoe", code="ES",   bbox=Bounding_box(nlat=43.75, slat=36, wlon=-9.25, elon=3.5),   tz="CET"),
-    "SE":    RegionData(provider="entsoe", code="SE",   bbox=Bounding_box(nlat=69, slat=55.25, wlon=11.25, elon=21.25), tz="CET"),
-    "PL":    RegionData(provider="entsoe", code="PL",   bbox=Bounding_box(nlat=54.75, slat=49, wlon=14, elon=24),       tz="CET"),
-    "FR":    RegionData(provider="entsoe", code="FR",   bbox=Bounding_box(nlat=51.25, slat=42.25, wlon=-5.25, elon=8.25), tz="CET"),
-    "BE":    RegionData(provider="entsoe", code="BE",   bbox=Bounding_box(nlat=51.5, slat=49.5, wlon=2.5, elon=6.25),   tz="CET"),
-    "FI":    RegionData(provider="entsoe", code="FI",   bbox=Bounding_box(nlat=70, slat=59.75, wlon=20.5, elon=31.5),   tz="EET"),
-    "DK-DK2":RegionData(provider="entsoe", code="DK_2", bbox=Bounding_box(nlat=57.75, slat=54.75, wlon=7.25, elon=11.25), tz="CET"),
+    "DE":     RegionData(provider="entsoe", code="DE",   bbox=Bounding_box(nlat=55.25, slat=47.25, wlon=5.75, elon=15),    tz="CET", flow_zones=("DE_LU",)),
+    "NL":     RegionData(provider="entsoe", code="NL",   bbox=Bounding_box(nlat=53.5, slat=50.75, wlon=3.25, elon=7),      tz="CET"),
+    "ES":     RegionData(provider="entsoe", code="ES",   bbox=Bounding_box(nlat=43.75, slat=36, wlon=-9.25, elon=3.5),     tz="CET"),
+    "SE":     RegionData(provider="entsoe", code="SE",   bbox=Bounding_box(nlat=69, slat=55.25, wlon=11.25, elon=21.25),   tz="CET", flow_zones=("SE_1", "SE_2", "SE_3", "SE_4")),
+    "PL":     RegionData(provider="entsoe", code="PL",   bbox=Bounding_box(nlat=54.75, slat=49, wlon=14, elon=24),         tz="CET"),
+    "FR":     RegionData(provider="entsoe", code="FR",   bbox=Bounding_box(nlat=51.25, slat=42.25, wlon=-5.25, elon=8.25), tz="CET"),
+    "BE":     RegionData(provider="entsoe", code="BE",   bbox=Bounding_box(nlat=51.5, slat=49.5, wlon=2.5, elon=6.25),     tz="CET"),
+    "FI":     RegionData(provider="entsoe", code="FI",   bbox=Bounding_box(nlat=70, slat=59.75, wlon=20.5, elon=31.5),     tz="EET"),
+    "DK-DK2": RegionData(provider="entsoe", code="DK_2", bbox=Bounding_box(nlat=57.75, slat=54.75, wlon=7.25, elon=11.25), tz="CET"),
     # --- Australia (NEM regions via Open Electricity) ---
-    "AUS_QLD": RegionData(provider="openelectricity", code="QLD1", bbox=Bounding_box(nlat=-8.75, slat=-29.75, wlon=137.5, elon=154), tz="Australia/Brisbane"),
+    "AUS_QLD": RegionData(provider="openelectricity", code="QLD1", bbox=Bounding_box(nlat=-8.75, slat=-29.75, wlon=137.5, elon=154),  tz="Australia/Brisbane"),
     "AUS_NSW": RegionData(provider="openelectricity", code="NSW1", bbox=Bounding_box(nlat=-34.75, slat=-36.5, wlon=148.25, elon=150), tz="Australia/Sydney"),
     "AUS_SA":  RegionData(provider="openelectricity", code="SA1",  bbox=Bounding_box(nlat=-25.5, slat=-38.5, wlon=128.5, elon=141.5), tz="Australia/Adelaide"),
 
@@ -144,6 +148,10 @@ class Electricity_data_fetcher(ABC):
     def fetch(self, region_code: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         raise NotImplementedError
 
+    def fetch_interchange(self, region: RegionData, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        # -> hourly UTC DataFrame, columns "<neighbour>_import" / "<neighbour>_export", MW, both >= 0
+        raise NotImplementedError
+    
 
 # EIA - US
 EIA_FUEL_MAP: dict[str, str | None] = {"COL": "coal", "NG": "nat_gas", "NUC": "nuclear", "OIL": "oil", "WAT": "hydro",
@@ -163,15 +171,17 @@ class EIA_Fetcher(Electricity_data_fetcher):
         self.api_key = api_key
         self.session = make_session()
 
-    def fetch(self, region_code: str, start: pd.Timestamp, end: pd.Timestamp): 
+    def _query(self, route: str, facet: str, region_code: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+        # all rows of an hourly EIA-930 route for one BA, paged and split by month
         assert self.api_key, "Set EIA_API_KEY (https://www.eia.gov/opendata/)"
-        url = "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/"
+        url = f"https://api.eia.gov/v2/electricity/rto/{route}/data/"
         rows = []
         for s, e in month_chunks(start, end):
             offset = 0
             while True:
+                # print(s)
                 params = {"api_key": self.api_key, "frequency": "hourly", "data[0]": "value",
-                        "facets[respondent][]": region_code,
+                        f"facets[{facet}][]": region_code,
                         "start": s.strftime("%Y-%m-%dT%H"), "end": (e - pd.Timedelta(hours=1)).strftime("%Y-%m-%dT%H"),
                         "sort[0][column]": "period", "sort[0][direction]": "asc",
                         "offset": offset, "length": 5000}
@@ -183,16 +193,31 @@ class EIA_Fetcher(Electricity_data_fetcher):
                 offset += len(data)
                 if not data or offset >= int(resp.get("total", 0)):
                     break
-            print(f"  EIA {region_code} {s.date()} - {e.date()}: {offset} rows")
-        df = pd.DataFrame(rows)
+        return pd.DataFrame(rows)
+
+    def fetch_interchange(self, region: RegionData, start: pd.Timestamp, end: pd.Timestamp):
+        # EIA-930 reports one net value per neighbouring BA and hour:
+        # positive = net outflow (export) from `fromba` to `toba`, negative = net inflow (import).
+        df = self._query("interchange-data", "fromba", region.code, start, end)
+        if df.empty:
+            return pd.DataFrame()
         df["period"] = pd.to_datetime(df["period"], format="%Y-%m-%dT%H")
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
-        unknown = sorted(set(df["fueltype"]) - set(EIA_FUEL_MAP))
-        if unknown:
-            print("  Unmapped EIA fuel types (counted as 'other'):", unknown)
-        df["source"] = df["fueltype"].map(lambda f: EIA_FUEL_MAP.get(cast(str, f), "other"))
-        df = df[df["source"].notna()]
-        return df.pivot_table(index="period", columns="source", values="value", aggfunc="sum")
+        net = df.pivot_table(index="period", columns="toba", values="value", aggfunc="sum")
+        exp = net.clip(lower=0).add_suffix("_export")
+        imp = (-net).clip(lower=0).add_suffix("_import")
+        return pd.concat([imp, exp], axis=1)
+
+    def fetch(self, region_code: str, start: pd.Timestamp, end: pd.Timestamp):
+            df = self._query("fuel-type-data", "respondent", region_code, start, end)
+            df["period"] = pd.to_datetime(df["period"], format="%Y-%m-%dT%H")
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            unknown = sorted(set(df["fueltype"]) - set(EIA_FUEL_MAP))
+            if unknown:
+                print("Unmapped EIA fuel types (counted as 'other'):", unknown)
+            df["source"] = df["fueltype"].map(lambda f: EIA_FUEL_MAP.get(cast(str, f), "other"))
+            df = df[df["source"].notna()]
+            return df.pivot_table(index="period", columns="source", values="value", aggfunc="sum")
 
 # ENTSOE - EU
 
@@ -235,7 +260,7 @@ class Entsoe_Fetcher (Electricity_data_fetcher):
                 keep = [c for c in g.columns if c[1] == "Actual Aggregated"]
                 g = g[keep]; g.columns = [c[0] for c in keep]
             parts.append(_to_hourly_utc(g))
-            print(f"  ENTSO-E {region_code} {s.date()} - {e.date()}: {len(g)} rows, types: {list(g.columns)}")
+            # print(f"  ENTSO-E {region_code} {s.date()} - {e.date()}: {len(g)} rows, types: {list(g.columns)}")
         raw = pd.concat(parts).sort_index()
         raw = raw[~raw.index.duplicated()]
         unknown = sorted(set(raw.columns) - set(ENTSOE_MAP))
@@ -244,6 +269,40 @@ class Entsoe_Fetcher (Electricity_data_fetcher):
         names = [ENTSOE_MAP.get(c, "unknown") for c in raw.columns]
         keep = [n is not None for n in names]
         return raw.loc[:, keep].T.groupby([n for n in names if n is not None]).sum(min_count=1).T
+
+    def fetch_interchange(self, region: RegionData, start: pd.Timestamp, end: pd.Timestamp):
+        # Cross-border physical flows, both directions, for every neighbouring bidding zone in entsoe-py's NEIGHBOURS map.
+        # Borders between the region's own zones are skipped.
+        from entsoe.exceptions import NoMatchingDataError, InvalidBusinessParameterError
+        from entsoe.mappings import NEIGHBOURS
+        client = self.entsoe_client
+        zones = region.flow_zones or (region.code,)
+        skip = (NoMatchingDataError, InvalidBusinessParameterError)
+        series: dict[tuple[str, str], list[pd.Series]] = {}     # (column, own zone) -> monthly parts
+        for zone in zones:
+            neighbours = [n for n in NEIGHBOURS.get(zone, []) if n not in zones]
+            # if not neighbours:
+            #     print(f"ENTSO-E: no neighbours known for {zone}")
+            for nb in neighbours:
+                for direction, frm, to in (("export", zone, nb), ("import", nb, zone)):
+                    for s, e in month_chunks(start, end):
+                        # print(s, direction, nb)
+                        try:
+                            f = with_retries(lambda: client.query_crossborder_flows(frm, to, start=pd.Timestamp(s, tz="UTC"), end=pd.Timestamp(e, tz="UTC")),
+                                                f"ENTSO-E flow {frm}->{to} {s.date()}", give_up_on=skip)
+                        except skip:
+                            continue # border not active in this period (e.g. old DE_AT_LU zone)
+                        f = f.to_frame() if isinstance(f, pd.Series) else f
+                        series.setdefault((f"{nb}_{direction}", zone), []).append(_to_hourly_utc(f).iloc[:, 0])
+        if not series:
+            return pd.DataFrame()
+        per_zone = {}
+        for key, parts in series.items():
+            s_ = pd.concat(parts).sort_index()
+            per_zone[key] = s_[~s_.index.duplicated()] # month edges can repeat an hour
+        df = pd.DataFrame(per_zone)
+        # several own zones bordering the same neighbour (e.g. SE_1 and SE_3 -> FI) are summed
+        return df.T.groupby(level=0).sum(min_count=1).T
 
 # Open electricity - australia
 
@@ -267,7 +326,47 @@ class OpenElectricity_Fetcher (Electricity_data_fetcher):
         assert api_key, "Set OPENELECTRICITY_API_KEY (https://platform.openelectricity.org.au)"
         self.api_key = api_key
 
+    def fetch_interchange(self, region: RegionData, start: pd.Timestamp, end: pd.Timestamp):
+        # In API v4 interconnector flows are market metrics (flow_imports / flow_exports, MW) on /v4/market,
+        # not fuel techs of the power data. They are totals per region, not split by neighbouring region.
+        os.environ["OPENELECTRICITY_API_KEY"] = self.api_key
+        from openelectricity import OEClient
+        from openelectricity.types import MarketMetric
+        NEM_OFFSET = pd.Timedelta(hours=10)
+        cols = {}
+        with OEClient() as client:
+            for metric_name, col in (("flow_imports", "NEM_import"), ("flow_exports", "NEM_export")):
+                metric = next((m for m in MarketMetric if m.value == metric_name), None)
+                parts = []
+                for s, e in month_chunks(start, end):
+                    resp = with_retries(lambda: client.get_market(network_code="NEM", metrics=[metric], interval="1h",
+                                                date_start=(s + NEM_OFFSET).to_pydatetime(),
+                                                date_end=(e + NEM_OFFSET).to_pydatetime(),
+                                                primary_grouping="network_region"),
+                                        f"Open Electricity {metric_name} {region.code} {s.date()}")
+                    df = resp.to_pandas()
+                    reg_col = next((c for c in ("network_region", "region") if c in df.columns), None)
+                    val_col = next((c for c in (metric_name, "value") if c in df.columns), None)
+                    assert reg_col and val_col and "interval" in df.columns, f"Unexpected columns: {list(df.columns)}"
+                    df = df[df[reg_col].astype(str).str.upper() == region.code]
+                    parts.append(df.set_index("interval")[val_col])
+                s_ = pd.concat(parts)
+                idx = pd.to_datetime(s_.index)
+                idx = idx.tz_convert("UTC").tz_localize(None) if idx.tz is not None else idx - NEM_OFFSET
+                s_.index = idx
+                s_ = pd.to_numeric(s_, errors="coerce").abs()      # exports may be reported as negative
+                cols[col] = s_[~s_.index.duplicated()].sort_index()
+        return pd.DataFrame(cols)
+
     def fetch(self, region_code: str, start: pd.Timestamp, end: pd.Timestamp):
+        df = self._fetch_raw(region_code, start, end)
+        df["source"] = df["fueltech"].map(map_fueltech)
+        print("  Fuel techs left out:", sorted(df.loc[df["source"].isna(), "fueltech"].unique()))
+        df = df[df["source"].notna()]
+        return df.pivot_table(index="interval", columns="source", values="value", aggfunc="sum")
+
+    def _fetch_raw(self, region_code: str, start: pd.Timestamp, end: pd.Timestamp):
+        # -> long DataFrame (interval [UTC], fueltech, value) for one NEM region
         os.environ["OPENELECTRICITY_API_KEY"] = self.api_key
         from openelectricity import OEClient
         from openelectricity.types import DataMetric
@@ -286,17 +385,14 @@ class OpenElectricity_Fetcher (Electricity_data_fetcher):
                 assert reg_col and val_col and "fueltech" in df.columns, f"Unexpected columns: {list(df.columns)}"
                 df = df[df[reg_col].astype(str).str.upper() == region_code]
                 parts.append(df[["interval", "fueltech", val_col]].rename(columns={val_col: "value"}))
-                print(f"  Open Electricity {region_code} {s.date()} - {e.date()}: {len(df)} rows")
+                # print(f"  Open Electricity {region_code} {s.date()} - {e.date()}: {len(df)} rows")
         df = pd.concat(parts)
         df["interval"] = pd.to_datetime(df["interval"])
         if df["interval"].dt.tz is not None:
             df["interval"] = df["interval"].dt.tz_convert("UTC").dt.tz_localize(None)
         else:
-            df["interval"] = df["interval"] - NEM_OFFSET          # naive NEM time -> UTC
-        df["source"] = df["fueltech"].map(map_fueltech)
-        print("  Fuel techs left out:", sorted(df.loc[df["source"].isna(), "fueltech"].unique()))
-        df = df[df["source"].notna()]
-        return df.pivot_table(index="interval", columns="source", values="value", aggfunc="sum")
+            df["interval"] = df["interval"] - NEM_OFFSET # naive NEM time -> UTC
+        return df
 
 # End of fetchers
 
@@ -342,6 +438,7 @@ def electricity():
     failed = []
     for region in REGION_NAMES:
         try:
+            print(region)
             out = region_dir(region)
             fetcher: Electricity_data_fetcher = fetchers[REGIONS_DATA_MAP[region].provider]()
             gen_raw = fetcher.fetch(REGIONS_DATA_MAP[region].code, START_TS, END_TS)
@@ -364,6 +461,50 @@ def electricity():
     if failed:
         raise SystemExit("Electricity data failed for: " + ", ".join(failed))
 
+# Interchange (imports / exports between regions)
+
+def clean_interchange(raw: pd.DataFrame, hours: pd.DatetimeIndex) -> pd.DataFrame:
+    # same gap handling as clean_generation. All values MW (hourly mean), >= 0 except net_import.
+    df = raw.copy()
+    df.index = pd.DatetimeIndex(df.index)
+    df = df[~df.index.duplicated()].reindex(hours)
+    n_missing = int(df.isna().all(axis=1).sum())
+    df = df.clip(lower=0).interpolate(limit=3, limit_area="inside").ffill().bfill().fillna(0)
+    df = df.loc[:, (df != 0).any()] # borders with no flow in this period
+    imp = sorted(c for c in df.columns if c.endswith("_import"))
+    exp = sorted(c for c in df.columns if c.endswith("_export"))
+    df = df[imp + exp]
+    df["total_import"] = df[imp].sum(axis=1)
+    df["total_export"] = df[exp].sum(axis=1)
+    df["net_import"] = df["total_import"] - df["total_export"] # > 0: region is a net importer
+    print(f"{len(df)} hours, {n_missing} hours had no interchange data at all and were filled; neighbours: "
+          f"{sorted({c.rsplit('_', 1)[0] for c in imp + exp})}")
+    return df.round(2)
+
+@main.command()
+def interchange():
+    """Download imports/exports between each region and its neighbours -> <REGION>_interchange.csv"""
+    fetchers = {"eia": lambda: EIA_Fetcher(EIA_API_KEY),
+            "entsoe": lambda: Entsoe_Fetcher(ENTSOE_API_KEY),
+            "openelectricity": lambda: OpenElectricity_Fetcher(OPENELECTRICITY_API_KEY)}
+    failed = []
+    for region in REGION_NAMES:
+        try:
+            print(region)
+            out = region_dir(region)
+            info = REGIONS_DATA_MAP[region]
+            fetcher: Electricity_data_fetcher = fetchers[info.provider]()
+            raw = fetcher.fetch_interchange(info, START_TS, END_TS)
+            if raw.empty:
+                raise RuntimeError("no interchange data returned")
+            raw.to_csv(out / f"{region}_interchange_raw.csv")
+            write_repo_csv(clean_interchange(raw, HOURS), out / f"{region}_interchange.csv", "%Y-%m-%d %H:%M:%S")
+        except Exception as ex:
+            print(f"{region} FAILED: {ex}")
+            failed.append(region)
+    if failed:
+        raise SystemExit("Interchange data failed for: " + ", ".join(failed))
+    
 # NOW weather data
 
 def earth_radius(lat: np.ndarray):
