@@ -69,7 +69,8 @@ def make_session(workers: int = 1) -> requests.Session:
     return session
 
 def with_retries(call, what: str, attempts: int = 3, give_up_on: tuple = ()):
-    for attempt in range(1, attempts + 1):
+    attempt = 1
+    while True:
         try:
             return call()
         except give_up_on:
@@ -79,6 +80,7 @@ def with_retries(call, what: str, attempts: int = 3, give_up_on: tuple = ()):
                 raise
             print(f"  {what}: attempt {attempt}/{attempts} failed ({exc}), retrying")
             time.sleep(5 * attempt)
+        attempt += 1
 
 
 @click.group()
@@ -250,7 +252,7 @@ class Entsoe_Fetcher (Electricity_data_fetcher):
         client, parts = self.entsoe_client, []
         for s, e in month_chunks(start, end):
             try:
-                g = with_retries(lambda: client.query_generation(region_code, start=pd.Timestamp(s, tz="UTC"), end=pd.Timestamp(e, tz="UTC")),
+                g: pd.DataFrame = with_retries(lambda: client.query_generation(region_code, start=pd.Timestamp(s, tz="UTC"), end=pd.Timestamp(e, tz="UTC")),
                                  f"ENTSO-E {region_code} {s.date()}", give_up_on=(NoMatchingDataError,))
             except NoMatchingDataError:
                 print(f"  ENTSO-E {region_code} {s.date()}: no data"); continue
@@ -336,7 +338,10 @@ class OpenElectricity_Fetcher (Electricity_data_fetcher):
         cols = {}
         with OEClient() as client:
             for metric_name, col in (("flow_imports", "NEM_import"), ("flow_exports", "NEM_export")):
-                metric = next((m for m in MarketMetric if m.value == metric_name), None)
+                try:
+                    metric = next((m for m in MarketMetric if m.value == metric_name))
+                except StopIteration:
+                    raise RuntimeError(f'metric {metric_name} not found in MarketMetric')
                 parts = []
                 for s, e in month_chunks(start, end):
                     resp = with_retries(lambda: client.get_market(network_code="NEM", metrics=[metric], interval="1h",
